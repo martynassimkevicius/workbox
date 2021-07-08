@@ -237,7 +237,7 @@ class StrategyHandler {
    * @return {Promise<Response>}
    */
   async fetchAndCachePut(input: RequestInfo): Promise<Response> {
-    const response = await this.fetch(input);
+    const response = await this.waitUntil(this.fetch(input));
     const responseClone = response.clone();
 
     this.waitUntil(this.cachePut(input, responseClone));
