@@ -12,12 +12,16 @@ const ol = require('common-tags').oneLine;
 const logHelper = require('../infra/utils/log-helper');
 
 async function publish_lerna() {
-  const options = ['publish', '--force-publish'];
+  // See https://github.com/GoogleChrome/workbox/issues/2904#issuecomment-894452253
+  const options = ['publish', '--force-publish', '--exact'];
 
   // gulp publish --distTag=latest would be the most common.
   if (global.cliOptions.distTag) {
-    logHelper.log(ol`Using ${logHelper.highlight(
-        '--dist-tag=' + global.cliOptions.distTag)}`);
+    logHelper.log(
+      ol`Using ${logHelper.highlight(
+        '--dist-tag=' + global.cliOptions.distTag,
+      )}`,
+    );
     options.push('--dist-tag', global.cliOptions.distTag);
   } else {
     throw new Error(ol`Please set the --distTag command line option, normally

@@ -118,4 +118,7 @@ export const errors = {
     configure a runtimeCaching route that will use the preloaded response.`,
   'cache-name-required': ol`When using cache expiration, you must also
     configure a custom cacheName.`,
+  'manifest-transforms': ol`When using manifestTransforms, you must provide
+    an array of functions.`,
+  'invalid-handler-string': ol`The handler name provided is not valid: `,
 };

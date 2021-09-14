@@ -88,7 +88,7 @@ class CacheTimestampsModel {
   private _upgradeDbAndDeleteOldDbs(db: IDBPDatabase<CacheDbSchema>) {
     this._upgradeDb(db);
     if (this._cacheName) {
-      deleteDB(this._cacheName);
+      void deleteDB(this._cacheName);
     }
   }
 
@@ -98,7 +98,7 @@ class CacheTimestampsModel {
    *
    * @private
    */
-  async setTimestamp(url: string, timestamp: number) {
+  async setTimestamp(url: string, timestamp: number): Promise<void> {
     url = normalizeURL(url);
 
     const entry: CacheTimestampsModelEntry = {
@@ -111,7 +111,9 @@ class CacheTimestampsModel {
       id: this._getId(url),
     };
     const db = await this.getDb();
-    await db.put(CACHE_OBJECT_STORE, entry);
+    const tx = db.transaction(CACHE_OBJECT_STORE, 'readwrite', {durability: 'relaxed'});
+    await tx.store.put(entry);
+    await tx.done;
   }
 
   /**
@@ -207,7 +209,7 @@ class CacheTimestampsModel {
   private async getDb() {
     if (!this._db) {
       this._db = await openDB(DB_NAME, 1, {
-        upgrade: this._upgradeDbAndDeleteOldDbs,
+        upgrade: this._upgradeDbAndDeleteOldDbs.bind(this),
       });
     }
     return this._db;

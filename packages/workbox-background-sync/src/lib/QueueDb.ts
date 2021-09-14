@@ -28,6 +28,9 @@ export interface UnidentifiedQueueStoreEntry {
   timestamp: number;
   id?: number;
   queueName?: string;
+  // We could use Record<string, unknown> as a type but that would be a breaking
+  // change, better do it in next major release.
+  // eslint-disable-next-line  @typescript-eslint/ban-types
   metadata?: object;
 }
 
@@ -36,7 +39,7 @@ export interface QueueStoreEntry extends UnidentifiedQueueStoreEntry {
 }
 
 /**
- * A class to interact directly an IndexedDB created specifically to save and 
+ * A class to interact directly an IndexedDB created specifically to save and
  * retrieve QueueStoreEntries. This class encapsulates all the schema details
  * to store the representation of a Queue.
  *
@@ -48,12 +51,14 @@ export class QueueDb {
 
   /**
    * Add QueueStoreEntry to underlying db.
-   * 
+   *
    * @param {UnidentifiedQueueStoreEntry} entry
    */
-  async addEntry(entry: UnidentifiedQueueStoreEntry) {
+  async addEntry(entry: UnidentifiedQueueStoreEntry): Promise<void> {
     const db = await this.getDb();
-    await db.add(REQUEST_OBJECT_STORE_NAME, entry as QueueStoreEntry);
+    const tx = db.transaction(REQUEST_OBJECT_STORE_NAME, 'readwrite', { durability: 'relaxed' });
+    await tx.store.add(entry as QueueStoreEntry);
+    await tx.done;
   }
 
   /**
@@ -69,7 +74,7 @@ export class QueueDb {
 
   /**
    * Get all the entries filtered by index
-   * 
+   *
    * @param queueName
    * @return {Promise<QueueStoreEntry[]>}
    */
@@ -83,17 +88,17 @@ export class QueueDb {
 
   /**
    * Deletes a single entry by id.
-   * 
+   *
    * @param {number} id the id of the entry to be deleted
    */
-  async deleteEntry(id: number) {
+  async deleteEntry(id: number): Promise<void> {
     const db = await this.getDb();
     await db.delete(REQUEST_OBJECT_STORE_NAME, id);
   }
 
   /**
-   * 
-   * @param queueName 
+   *
+   * @param queueName
    * @returns {Promise<QueueStoreEntry | undefined>}
    */
   async getFirstEntryByQueueName(queueName: string): Promise<QueueStoreEntry | undefined> {
@@ -101,7 +106,7 @@ export class QueueDb {
   }
 
   /**
-   * 
+   *
    * @param queueName
    * @returns {Promise<QueueStoreEntry | undefined>}
    */
@@ -110,7 +115,7 @@ export class QueueDb {
   }
 
   /**
-   * Returns either the first or the last entries, depending on direction. 
+   * Returns either the first or the last entries, depending on direction.
    * Filtered by index.
    *
    * @param {IDBCursorDirection} direction

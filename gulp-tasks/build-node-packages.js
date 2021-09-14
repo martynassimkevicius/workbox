@@ -16,23 +16,41 @@ const constants = require('./utils/constants');
 const packageRunner = require('./utils/package-runner');
 
 async function buildNodePackage(packagePath) {
-  const outputDirectory = upath.join(packagePath,
-      constants.PACKAGE_BUILD_DIRNAME);
+  const outputDirectory = upath.join(
+    packagePath,
+    constants.PACKAGE_BUILD_DIRNAME,
+  );
 
-  const configFile = upath.join(__dirname, 'utils',
-      'node-projects-babel.config.json');
+  const configFile = upath.join(
+    __dirname,
+    'utils',
+    'node-projects-babel.config.json',
+  );
 
-  await execa('babel', [
-    '--config-file', configFile,
-    `${packagePath}/src`,
-    '--out-dir', outputDirectory,
-    '--copy-files',
-  ], {preferLocal: true});
+  await execa(
+    'babel',
+    [
+      '--config-file',
+      configFile,
+      `${packagePath}/src`,
+      '--out-dir',
+      outputDirectory,
+      '--copy-files',
+    ],
+    {preferLocal: true},
+  );
 }
 
 async function generateWorkboxBuildJSONSchema(packagePath) {
-  const program = TJS.programFromConfig(upath.join(packagePath,
-      'tsconfig.json'));
+  // We only want to do this for workbox-build, but this function might be
+  // run for any package, so exit early.
+  if (!packagePath.endsWith('workbox-build')) {
+    return;
+  }
+
+  const program = TJS.programFromConfig(
+    upath.join(packagePath, 'tsconfig.json'),
+  );
   const generator = TJS.buildGenerator(program, {
     noExtraProps: true,
     required: true,
@@ -46,49 +64,58 @@ async function generateWorkboxBuildJSONSchema(packagePath) {
   ];
   for (const optionType of optionTypes) {
     const schema = generator.getSchemaForSymbol(optionType);
-    // Ideally, we'd set typeOfKeyword so that functions could be represented.
-    // Instead, we need to hardcode a few overrides to deal with functions.
-    // See https://github.com/YousefED/typescript-json-schema/issues/424
+
     if (schema.properties.manifestTransforms) {
-      schema.properties.manifestTransforms.items = {typeof: 'function'};
+      schema.properties.manifestTransforms.items = {};
     }
+
     if (schema.properties.exclude) {
-      schema.properties.exclude.items.anyOf = [
-        {'$ref': '#/definitions/RegExp'},
-        {type: 'string'},
-        {typeof: 'function'},
-      ];
+      schema.properties.exclude.items = {};
     }
+
     if (schema.properties.include) {
-      schema.properties.include.items.anyOf = [
-        {'$ref': '#/definitions/RegExp'},
-        {type: 'string'},
-        {typeof: 'function'},
-      ];
+      schema.properties.include.items = {};
     }
+
+    // See https://github.com/GoogleChrome/workbox/issues/2910
+    if (schema.definitions.OnSyncCallback) {
+      schema.definitions.OnSyncCallback = {};
+    }
+
     if (schema.definitions.RouteMatchCallback) {
-      delete schema.definitions.RouteMatchCallback.type;
-      delete schema.definitions.RouteMatchCallback.additionalProperties;
-      schema.definitions.RouteMatchCallback.typeof = 'function';
+      schema.definitions.RouteMatchCallback = {};
     }
-    await fse.writeJSON(upath.join(packagePath, 'src', 'schema',
-        `${optionType}.json`), schema, {spaces: 2});
-  }
-}
 
-async function buildNodeTSPackage(packagePath) {
-  // Hardcode special logic for workbox-build, as it's the only package
-  // that requires JSON schema generation.
-  if (packagePath.endsWith('workbox-build')) {
-    await generateWorkboxBuildJSONSchema(packagePath);
-  }
+    if (schema.definitions.RouteHandlerCallback) {
+      schema.definitions.RouteHandlerCallback = {};
+    }
 
-  await execa('tsc', ['-b', packagePath], {preferLocal: true});
+    // See https://github.com/GoogleChrome/workbox/issues/2901
+    if (schema.definitions.WorkboxPlugin) {
+      for (const plugin of Object.keys(
+        schema.definitions.WorkboxPlugin.properties,
+      )) {
+        schema.definitions.WorkboxPlugin.properties[plugin] = {};
+      }
+    }
+
+    await fse.writeJSON(
+      upath.join(packagePath, 'src', 'schema', `${optionType}.json`),
+      schema,
+      {spaces: 2},
+    );
+  }
 }
 
 module.exports = {
-  build_node_packages: parallel(packageRunner('build_node_packages', 'node',
-      buildNodePackage)),
-  build_node_ts_packages: parallel(packageRunner('build_node_ts_packages',
-      'node_ts', buildNodeTSPackage)),
+  build_node_packages: parallel(
+    packageRunner('build_node_packages', 'node', buildNodePackage),
+  ),
+  build_node_ts_packages: parallel(
+    packageRunner(
+      'build_node_ts_packages',
+      'node_ts',
+      generateWorkboxBuildJSONSchema,
+    ),
+  ),
 };

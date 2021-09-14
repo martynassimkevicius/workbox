@@ -41,15 +41,15 @@ class PrecacheStrategy extends Strategy {
       if (!response || response.status >= 400) {
         return null;
       }
-  
+
       return response;
-    }
+    },
   };
 
   static readonly copyRedirectedCacheableResponsesPlugin: WorkboxPlugin = {
     async cacheWillUpdate({response}) {
       return response.redirected ? await copyResponse(response) : response;
-    }
+    },
   };
 
   /**
@@ -73,7 +73,8 @@ class PrecacheStrategy extends Strategy {
     options.cacheName = cacheNames.getPrecacheName(options.cacheName);
     super(options);
 
-    this._fallbackToNetwork = options.fallbackToNetwork === false ? false: true;
+    this._fallbackToNetwork =
+      options.fallbackToNetwork === false ? false : true;
 
     // Redirected responses cannot be used to satisfy a navigation request, so
     // any redirected response must be "copied" rather than cloned, so the new
@@ -89,33 +90,70 @@ class PrecacheStrategy extends Strategy {
    *     triggered the request.
    * @return {Promise<Response>}
    */
-  async _handle(request: Request, handler: StrategyHandler) {
+  async _handle(request: Request, handler: StrategyHandler): Promise<Response> {
     const response = await handler.cacheMatch(request);
-    if (!response) {
-      // If this is an `install` event then populate the cache. If this is a
-      // `fetch` event (or any other event) then respond with the cached
-      // response.
-      if (handler.event && handler.event.type === 'install') {
-        return await this._handleInstall(request, handler);
-      }
-      return await this._handleFetch(request, handler);
+    if (response) {
+      return response;
     }
 
-    return response;
+    // If this is an `install` event for an entry that isn't already cached,
+    // then populate the cache.
+    if (handler.event && handler.event.type === 'install') {
+      return await this._handleInstall(request, handler);
+    }
+
+    // Getting here means something went wrong. An entry that should have been
+    // precached wasn't found in the cache.
+    return await this._handleFetch(request, handler);
   }
 
-  async _handleFetch(request: Request, handler: StrategyHandler) {
+  async _handleFetch(
+    request: Request,
+    handler: StrategyHandler,
+  ): Promise<Response> {
     let response;
+    const params = (handler.params || {}) as {
+      cacheKey?: string;
+      integrity?: string;
+    };
 
-    // Fall back to the network if we don't have a cached response
-    // (perhaps due to manual cache cleanup).
+    // Fall back to the network if we're configured to do so.
     if (this._fallbackToNetwork) {
       if (process.env.NODE_ENV !== 'production') {
-        logger.warn(`The precached response for ` +
+        logger.warn(
+          `The precached response for ` +
             `${getFriendlyURL(request.url)} in ${this.cacheName} was not ` +
-            `found. Falling back to the network instead.`);
+            `found. Falling back to the network.`,
+        );
       }
-      response = await handler.fetch(request);
+
+      const integrityInManifest = params.integrity;
+      const integrityInRequest = request.integrity;
+      const noIntegrityConflict =
+        !integrityInRequest || integrityInRequest === integrityInManifest;
+      response = await handler.fetch(
+        new Request(request, {
+          integrity: integrityInRequest || integrityInManifest,
+        }),
+      );
+
+      // It's only "safe" to repair the cache if we're using SRI to guarantee
+      // that the response matches the precache manifest's expectations,
+      // and there's either a) no integrity property in the incoming request
+      // or b) there is an integrity, and it matches the precache manifest.
+      // See https://github.com/GoogleChrome/workbox/issues/2858
+      if (integrityInManifest && noIntegrityConflict) {
+        this._useDefaultCacheabilityPluginIfNeeded();
+        const wasCached = await handler.cachePut(request, response.clone());
+        if (process.env.NODE_ENV !== 'production') {
+          if (wasCached) {
+            logger.log(
+              `A response for ${getFriendlyURL(request.url)} ` +
+                `was used to "repair" the precache.`,
+            );
+          }
+        }
+      }
     } else {
       // This shouldn't normally happen, but there are edge cases:
       // https://github.com/GoogleChrome/workbox/issues/1441
@@ -126,14 +164,19 @@ class PrecacheStrategy extends Strategy {
     }
 
     if (process.env.NODE_ENV !== 'production') {
-      const cacheKey = handler.params && handler.params.cacheKey ||
-          await handler.getCacheKey(request, 'read');
+      const cacheKey =
+        params.cacheKey || (await handler.getCacheKey(request, 'read'));
 
       // Workbox is going to handle the route.
       // print the routing details to the console.
-      logger.groupCollapsed(`Precaching is responding to: ` +
-          getFriendlyURL(request.url));
-      logger.log(`Serving the precached url: ${getFriendlyURL(cacheKey.url)}`);
+      logger.groupCollapsed(
+        `Precaching is responding to: ` + getFriendlyURL(request.url),
+      );
+      logger.log(
+        `Serving the precached url: ${getFriendlyURL(
+          cacheKey instanceof Request ? cacheKey.url : cacheKey,
+        )}`,
+      );
 
       logger.groupCollapsed(`View request details here.`);
       logger.log(request);
@@ -145,10 +188,14 @@ class PrecacheStrategy extends Strategy {
 
       logger.groupEnd();
     }
+
     return response;
   }
 
-  async _handleInstall(request: Request, handler: StrategyHandler) {
+  async _handleInstall(
+    request: Request,
+    handler: StrategyHandler,
+  ): Promise<Response> {
     this._useDefaultCacheabilityPluginIfNeeded();
 
     const response = await handler.fetch(request);
@@ -170,27 +217,27 @@ class PrecacheStrategy extends Strategy {
 
   /**
    * This method is complex, as there a number of things to account for:
-   * 
+   *
    * The `plugins` array can be set at construction, and/or it might be added to
    * to at any time before the strategy is used.
-   * 
+   *
    * At the time the strategy is used (i.e. during an `install` event), there
    * needs to be at least one plugin that implements `cacheWillUpdate` in the
    * array, other than `copyRedirectedCacheableResponsesPlugin`.
-   * 
+   *
    * - If this method is called and there are no suitable `cacheWillUpdate`
    * plugins, we need to add `defaultPrecacheCacheabilityPlugin`.
-   * 
+   *
    * - If this method is called and there is exactly one `cacheWillUpdate`, then
    * we don't have to do anything (this might be a previously added
-   * `defaultPrecacheCacheabilityPlugin`, or it might be a custom plugin). 
-   * 
+   * `defaultPrecacheCacheabilityPlugin`, or it might be a custom plugin).
+   *
    * - If this method is called and there is more than one `cacheWillUpdate`,
    * then we need to check if one is `defaultPrecacheCacheabilityPlugin`. If so,
    * we need to remove it. (This situation is unlikely, but it could happen if
    * the strategy is used multiple times, the first without a `cacheWillUpdate`,
    * and then later on after manually adding a custom `cacheWillUpdate`.)
-   * 
+   *
    * See https://github.com/GoogleChrome/workbox/issues/2737 for more context.
    *
    * @private
